@@ -108,7 +108,7 @@
  *   [R1] NO MATCH dst=10.0.99.55
  *
  * -------------------------------------------------------------------------
- * ✅ Summary
+ * Summary
  * -------------------------------------------------------------------------
  * | Event              | Tag               | Example                                    |
  * |--------------------|-------------------|--------------------------------------------|
@@ -226,6 +226,48 @@ static inline int udp_bind(uint16_t p){
  * ------------------------------------------------------------------------- */
 static void send_dv(router_t* R, const neighbor_t* nb){
     // TODO: Build DV message and send it to neighbor nb
+    dv_msg_t m = {0};
+    m.type = MSG_DV;
+    m.sender_id = htons(R->self_id);
+    m.num = 0;
+    // Go through neighbors to populate teh message with routes and costs
+    for(int i = 0; i < R->num_routes; i++)
+    {
+        route_entry_t* route = &R->routes[i];
+        uint16_t cost = route->cost;
+        bool skip = false;
+        // Split horizon: Do not advertise a route back to the neighbor from which it was learned.
+        if (route->next_hop == nb->ip)
+        {
+            // Poison reverse: If a route was learned from a neighbor, still advertise it back, but with an infinite cost
+            cost = INF_COST;
+        }
+        // Skip poisoned routes
+        if (route->cost >= INF_COST)
+        {
+            skip = true;
+        }
+        // If not poisoned and less than maximum destinations add route to message
+        if (!skip && m.num < MAX_DEST)
+        {
+            m.e[m.num].net = route->dest_net;
+            m.e[m.num].mask = route->mask;
+            m.e[m.num].cost = htons(cost);
+            m.num++;
+        }
+        m.num = htons(m.num);
+    }
+    // Use sendto() to transmit the message
+    struct sockaddr_in dest = {0};
+    dest.sin_family = AF_INET;
+    // Exchange messages locally through loopback interface
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dest.sin_port = htons(nb->ctrl_port);
+    size_t msgSize = sizeof(m.type) + sizeof(m.sender_id) + sizeof(m.num) + (ntohs(m.num) * sizeof(m.e[0]));
+    if(sendto(R->sock_ctrl, &m, msgSize, 0, (struct sockaddr*)&dest, sizeof(dest)) < 0)
+    {
+        fprintf(stderr,"ERROR: sendto for DV update errrored.");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -233,6 +275,15 @@ static void send_dv(router_t* R, const neighbor_t* nb){
  * ------------------------------------------------------------------------- */
 static void broadcast_dv(router_t* R){
     // TODO: Loop over neighbors and call send_dv() for each alive neighbor
+    for (int i = 0; i < R->num_neighbors; i++)
+    {
+        neighbor_t* nb = &R->neighbors[i];
+        // if the neighbor is alive call senddv()
+        if (nb->alive)
+        {
+            send_dv(R,nb);
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -244,6 +295,56 @@ static void broadcast_dv(router_t* R){
 static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
     bool changed = false;
     // TODO: Implement Bellman-Ford update logic
+    nb->alive = true;
+    nb->last_heard = time(NULL);
+    uint16_t numEntries = ntohs(m->num);
+    uint16_t link_cost_to_neighbor = nb->cost;
+    for(int i = 0; i < numEntries; i++)
+    {
+        bool newCostCheaper = false;
+        bool curretnNextHop = false;
+        uint16_t neighbor_cost_to_destination = ntohs(m->e[i].cost);
+        // skip poisoned routes
+        if(neighbor_cost_to_destination >= INF_COST)
+        {
+            continue;
+        }
+        route_entry_t* tableRoute = rt_find_or_add(R, m->e[i].net, m->e[i].mask);
+        if(tableRoute == NULL)
+        {
+            continue;
+        }
+        // Bellman Ford: new_cost = link_cost_to_neighbor + neighbor_cost_to_destination
+        uint16_t new_cost = link_cost_to_neighbor + neighbor_cost_to_destination;
+        // Check for overflow
+        if(new_cost > INF_COST)
+        {
+            new_cost = INF_COST;
+        }
+        // If this new_cost is smaller than your current cost, you update your table to use that neighbor as the new next hop.
+        if(new_cost < tableRoute->cost)
+        {
+            newCostCheaper = true;
+        }
+        // Check if route is learned from neighbor
+        if(tableRoute->next_hop == nb->ip)
+        {
+            curretnNextHop = true;
+        }
+        if(newCostCheaper || curretnNextHop)
+        {
+            tableRoute->cost = new_cost;
+            if(new_cost < INF_COST)
+            {
+                tableRoute->next_hop = nb->ip;
+            } else {
+                tableRoute->next_hop = 0;
+            }
+            tableRoute->last_update = time(NULL);
+            changed = true;
+        }
+
+    }
     return changed;
 }
 
@@ -277,7 +378,6 @@ int main(int argc, char** argv){
 
     time_t next_broadcast = time(NULL) + UPDATE_INTERVAL_SEC;
     log_table(&R, "init");
-
     //----------------------------------------------------------------------
     // Main event loop using select()
     //
@@ -308,13 +408,60 @@ int main(int argc, char** argv){
             // TODO: Neighbor timeout detection (use neighbor_t's last_heard)
             // If timeout is detected, poison all routes learned from this neighbor
             // Output a log message with log_table(&R, "neighbor-dead");
+            bool poisonNeighbor = false;
+            neighbor_t* nb = &R.neighbors[i];
+            // Check for timeout
+            if(nb->alive && (time(NULL) -nb->last_heard) >= DEAD_INTERVAL_SEC)
+            {
+                nb->alive = false;
+                // Poison all routes from neighbor
+                for(int j = 0; j < R.num_routes; j++)
+                {
+                    route_entry_t* route = &R.routes[j];
+                    if(route->next_hop == nb->ip)
+                    {
+                        route->cost = INF_COST;
+                        route->last_update = time(NULL);
+                        poisonNeighbor = true;
+                    }
+                }
+            }
+            if(poisonNeighbor)
+            {
+                log_table(&R,"neighor-dead");
+                broadcast_dv(&R);
+            }
         }
 
         //Handle control (DV) messages
         if(n > 0 && FD_ISSET(R.sock_ctrl, &rfds)){
             // TODO: Handle control (DV) messages and call dv_update
             // If the routing table is changed, output a log message with log_table(&R,"dv-update")
-
+            dv_msg_t m;
+            struct sockaddr_in sender_addr;
+            socklen_t addr_len = sizeof(sender_addr);
+            ssize_t len = recvfrom(R.sock_ctrl, &m, sizeof(m), 0,(struct sockaddr*)&sender_addr, &addr_len);
+            // Check this is a DV message
+            if(m.type != MSG_DV)
+            {
+                continue;
+            }
+            uint16_t sender_port = ntohs(sender_addr.sin_port);
+            neighbor_t* sender_nb = NULL;
+            // Loop through neighbors till sender is found
+            for(int i = 1; i < R.num_neighbors;i++)
+            {
+                if(R.neighbors[i].ctrl_port == sender_port)
+                {
+                    sender_nb = &R.neighbors[i];
+                }
+            }
+            // Call dv_update with Bellman-Ford
+            bool changed = dv_update(&R,sender_nb,&m);
+            if(changed)
+            {
+                log_table(&R, "dv_update");
+            }
         }
         
         // TODO: Handle data packets

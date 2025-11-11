@@ -266,7 +266,7 @@ static void send_dv(router_t* R, const neighbor_t* nb){
     size_t msgSize = sizeof(m.type) + sizeof(m.sender_id) + sizeof(m.num) + (ntohs(m.num) * sizeof(m.e[0]));
     if(sendto(R->sock_ctrl, &m, msgSize, 0, (struct sockaddr*)&dest, sizeof(dest)) < 0)
     {
-        fprintf(stderr,"ERROR: sendto for DV update errrored.");
+        perror("ERROR: sendto for DV update errrored.");
     }
 }
 
@@ -356,6 +356,68 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
  * ------------------------------------------------------------------------- */
 static void forward_data(router_t* R, const data_msg_t* in){
     // TODO: Implement packet forwarding using LPM
+    // Decrement TTL
+    data_msg_t outMsg = *in;
+    outMsg.ttl--;
+    char out_dst_ip[32];
+    ipstr(outMsg.dst_ip, out_dst_ip, sizeof(out_dst_ip));
+    
+    // Perform LPM lookup to find next hop
+    route_entry_t* route = rt_lookup(R, outMsg.dst_ip);
+
+    // Deliver locally if directly connected
+    if(route && route->next_hop == 0)
+    {
+        printf("[R%u] DELIVER src=%s ttl=%u payload=\"%.*s\"\n",R->self_id,out_dst_ip, outMsg.ttl,outMsg.payload);
+        fflush(stdout);
+        return;
+    }
+
+    // If not locally connected check first if ttl is 0
+    if(outMsg.ttl == 0)
+    {
+        printf("[R%u] DROP ttl=0\n",R->self_id);
+        fflush(stdout);
+        return;
+    }
+
+    // Forward via UDP
+    // Check is route exists
+    if(route == NULL)
+    {
+        printf("[R%u] NO MATCH dst=%s\n",R->self_id, out_dst_ip);
+        fflush(stdout);
+        return;
+    }
+
+    // Get next hop info
+    uint32_t nextHopIP = route->next_hop;
+    uint16_t nextHopCost = route->cost;
+    neighbor_t* nextHopNb = NULL;
+    for (int i = 0; i< R->num_neighbors; i++)
+    {
+        if(R->neighbors[i].ip == nextHopIP)
+        {
+            nextHopNb = &R->neighbors[i];
+            break;
+        }
+    }
+
+    uint16_t nextHopPort = get_data_port(nextHopNb->ctrl_port);
+    char viaStr[32];
+    ipstr(nextHopIP, viaStr, sizeof(viaStr));
+    printf("[R%u] FWD dst=%s via=%s cost=%u ttl=%u\n",R->self_id,out_dst_ip, viaStr,nextHopCost,outMsg.ttl);
+    fflush(stdout);
+    // Send to next hop's port
+    struct sockaddr_in dest = {0};
+    dest.sin_family = AF_INET;
+    dest.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dest.sin_port = htons(nextHopPort);
+    size_t msgSize = sizeof(outMsg.type) + sizeof(outMsg.ttl) + sizeof(outMsg.src_ip) + sizeof(outMsg.dst_ip) + sizeof(outMsg.payload_len) + ntohs(in->payload_len);;
+    if(sendto(R->sock_data, &outMsg, msgSize, 0, (struct sockaddr*)&dest, sizeof(dest)) < 0)
+    {
+        perror("ERROR: sendto() data packet failed");
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -449,7 +511,7 @@ int main(int argc, char** argv){
             uint16_t sender_port = ntohs(sender_addr.sin_port);
             neighbor_t* sender_nb = NULL;
             // Loop through neighbors till sender is found
-            for(int i = 1; i < R.num_neighbors;i++)
+            for(int i = 0; i < R.num_neighbors;i++)
             {
                 if(R.neighbors[i].ctrl_port == sender_port)
                 {
@@ -467,6 +529,18 @@ int main(int argc, char** argv){
         // TODO: Handle data packets
         if(n > 0 && FD_ISSET(R.sock_data, &rfds)){
             // TODO: Handle data packets and call forward_data
+            data_msg_t msg;
+            struct sockaddr_in senderAddr;
+            socklen_t addrLen = sizeof(senderAddr);
+            ssize_t len = recvfrom(R.sock_data, &msg, sizeof(msg), 0, (struct sockaddr*)&senderAddr, &addrLen);
+
+            if (msg.type != MSG_DATA)
+            {
+                continue;
+            }
+
+            // call forward data if msg data
+            forward_data(&R, &msg);
         }
     }
 

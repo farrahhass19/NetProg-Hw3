@@ -226,6 +226,7 @@ static inline int udp_bind(uint16_t p){
  * ------------------------------------------------------------------------- */
 static void send_dv(router_t* R, const neighbor_t* nb){
     // TODO: Build DV message and send it to neighbor nb
+    printf("START send_dv\n");
     dv_msg_t m = {0};
     m.type = MSG_DV;
     m.sender_id = htons(R->self_id);
@@ -242,21 +243,15 @@ static void send_dv(router_t* R, const neighbor_t* nb){
             // Poison reverse: If a route was learned from a neighbor, still advertise it back, but with an infinite cost
             cost = INF_COST;
         }
-        // Skip poisoned routes
-        if (route->cost >= INF_COST)
-        {
-            skip = true;
-        }
-        // If not poisoned and less than maximum destinations add route to message
-        if (!skip && m.num < MAX_DEST)
+        if (m.num < MAX_DEST)
         {
             m.e[m.num].net = route->dest_net;
             m.e[m.num].mask = route->mask;
             m.e[m.num].cost = htons(cost);
             m.num++;
         }
-        m.num = htons(m.num);
     }
+    m.num = htons(m.num);
     // Use sendto() to transmit the message
     struct sockaddr_in dest = {0};
     dest.sin_family = AF_INET;
@@ -268,6 +263,7 @@ static void send_dv(router_t* R, const neighbor_t* nb){
     {
         perror("ERROR: sendto for DV update errrored.");
     }
+    printf("END send_dv\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -275,6 +271,7 @@ static void send_dv(router_t* R, const neighbor_t* nb){
  * ------------------------------------------------------------------------- */
 static void broadcast_dv(router_t* R){
     // TODO: Loop over neighbors and call send_dv() for each alive neighbor
+    printf("START broadcast_dv\n");
     for (int i = 0; i < R->num_neighbors; i++)
     {
         neighbor_t* nb = &R->neighbors[i];
@@ -284,6 +281,7 @@ static void broadcast_dv(router_t* R){
             send_dv(R,nb);
         }
     }
+    printf("END broadcast_dv\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -295,6 +293,7 @@ static void broadcast_dv(router_t* R){
 static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
     bool changed = false;
     // TODO: Implement Bellman-Ford update logic
+    printf("START dv_update\n");
     nb->alive = true;
     nb->last_heard = time(NULL);
     uint16_t numEntries = ntohs(m->num);
@@ -304,20 +303,26 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
         bool newCostCheaper = false;
         bool curretnNextHop = false;
         uint16_t neighbor_cost_to_destination = ntohs(m->e[i].cost);
-        // skip poisoned routes
-        if(neighbor_cost_to_destination >= INF_COST)
-        {
-            continue;
-        }
         route_entry_t* tableRoute = rt_find_or_add(R, m->e[i].net, m->e[i].mask);
         if(tableRoute == NULL)
         {
             continue;
         }
+        // Check if route is learned from neighbor
+        if(tableRoute->next_hop == nb->ip)
+        {
+            curretnNextHop = true;
+            //if it is and neighbor is poisoned, poison this as well
+            if (neighbor_cost_to_destination >= INF_COST)
+            {
+                tableRoute->cost = INF_COST;
+                continue;
+            }
+        }
         // Bellman Ford: new_cost = link_cost_to_neighbor + neighbor_cost_to_destination
         uint16_t new_cost = link_cost_to_neighbor + neighbor_cost_to_destination;
         // Check for overflow
-        if(new_cost > INF_COST)
+        if(neighbor_cost_to_destination >= INF_COST)
         {
             new_cost = INF_COST;
         }
@@ -325,11 +330,6 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
         if(new_cost < tableRoute->cost)
         {
             newCostCheaper = true;
-        }
-        // Check if route is learned from neighbor
-        if(tableRoute->next_hop == nb->ip)
-        {
-            curretnNextHop = true;
         }
         if(newCostCheaper || curretnNextHop)
         {
@@ -345,6 +345,7 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
         }
 
     }
+    printf("END dv_update\n");
     return changed;
 }
 
@@ -356,19 +357,23 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
  * ------------------------------------------------------------------------- */
 static void forward_data(router_t* R, const data_msg_t* in){
     // TODO: Implement packet forwarding using LPM
+    printf("START forward_data\n");
     // Decrement TTL
+    printf("MARKER 0\n");
     data_msg_t outMsg = *in;
     outMsg.ttl--;
     char out_dst_ip[32];
-    ipstr(outMsg.dst_ip, out_dst_ip, sizeof(out_dst_ip));
-    
+    printf("MARKER 1\n");
+    ipstr(outMsg.src_ip, out_dst_ip, sizeof(out_dst_ip));
+    printf("MARKER 2\n");
     // Perform LPM lookup to find next hop
     route_entry_t* route = rt_lookup(R, outMsg.dst_ip);
-
+    printf("MARKER 3\n");
     // Deliver locally if directly connected
+    printf("Self_ip: %d\n, dst_ip: %d\n", R->self_ip, outMsg.dst_ip);
     if(route && route->next_hop == 0)
     {
-        printf("[R%u] DELIVER src=%s ttl=%u payload=\"%.*s\"\n",R->self_id,out_dst_ip, outMsg.ttl,outMsg.payload);
+        printf("[R%u] DELIVER src=%s ttl=%u payload=\"%.*s\"\n",R->self_id,out_dst_ip, outMsg.ttl, ntohs(outMsg.payload_len), outMsg.payload);
         fflush(stdout);
         return;
     }
@@ -392,6 +397,8 @@ static void forward_data(router_t* R, const data_msg_t* in){
 
     // Get next hop info
     uint32_t nextHopIP = route->next_hop;
+    ipstr(nextHopIP, out_dst_ip, sizeof(out_dst_ip));
+    printf("next hop IP: %s", out_dst_ip);
     uint16_t nextHopCost = route->cost;
     neighbor_t* nextHopNb = NULL;
     for (int i = 0; i< R->num_neighbors; i++)
@@ -402,7 +409,11 @@ static void forward_data(router_t* R, const data_msg_t* in){
             break;
         }
     }
+    //
+    if (nextHopNb == NULL)
+    {
 
+    }
     uint16_t nextHopPort = get_data_port(nextHopNb->ctrl_port);
     char viaStr[32];
     ipstr(nextHopIP, viaStr, sizeof(viaStr));
@@ -418,6 +429,7 @@ static void forward_data(router_t* R, const data_msg_t* in){
     {
         perror("ERROR: sendto() data packet failed");
     }
+    printf("END forward_data\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -473,7 +485,7 @@ int main(int argc, char** argv){
             bool poisonNeighbor = false;
             neighbor_t* nb = &R.neighbors[i];
             // Check for timeout
-            if(nb->alive && (time(NULL) -nb->last_heard) >= DEAD_INTERVAL_SEC)
+            if(nb->alive && (time(NULL)-(nb->last_heard)) >= DEAD_INTERVAL_SEC)
             {
                 nb->alive = false;
                 // Poison all routes from neighbor

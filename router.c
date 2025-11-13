@@ -226,7 +226,6 @@ static inline int udp_bind(uint16_t p){
  * ------------------------------------------------------------------------- */
 static void send_dv(router_t* R, const neighbor_t* nb){
     // TODO: Build DV message and send it to neighbor nb
-    printf("START send_dv\n");
     dv_msg_t m = {0};
     m.type = MSG_DV;
     m.sender_id = htons(R->self_id);
@@ -263,7 +262,6 @@ static void send_dv(router_t* R, const neighbor_t* nb){
     {
         perror("ERROR: sendto for DV update errrored.");
     }
-    printf("END send_dv\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -271,7 +269,6 @@ static void send_dv(router_t* R, const neighbor_t* nb){
  * ------------------------------------------------------------------------- */
 static void broadcast_dv(router_t* R){
     // TODO: Loop over neighbors and call send_dv() for each alive neighbor
-    printf("START broadcast_dv\n");
     for (int i = 0; i < R->num_neighbors; i++)
     {
         neighbor_t* nb = &R->neighbors[i];
@@ -281,7 +278,6 @@ static void broadcast_dv(router_t* R){
             send_dv(R,nb);
         }
     }
-    printf("END broadcast_dv\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -293,7 +289,7 @@ static void broadcast_dv(router_t* R){
 static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
     bool changed = false;
     // TODO: Implement Bellman-Ford update logic
-    printf("START dv_update\n");
+    //printf("START dv_update\n");
     nb->alive = true;
     nb->last_heard = time(NULL);
     uint16_t numEntries = ntohs(m->num);
@@ -302,6 +298,7 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
     {
         bool newCostCheaper = false;
         bool curretnNextHop = false;
+        bool poison = false;
         uint16_t neighbor_cost_to_destination = ntohs(m->e[i].cost);
         route_entry_t* tableRoute = rt_find_or_add(R, m->e[i].net, m->e[i].mask);
         if(tableRoute == NULL)
@@ -315,8 +312,7 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
             //if it is and neighbor is poisoned, poison this as well
             if (neighbor_cost_to_destination >= INF_COST)
             {
-                tableRoute->cost = INF_COST;
-                continue;
+                poison = true;
             }
         }
         // Bellman Ford: new_cost = link_cost_to_neighbor + neighbor_cost_to_destination
@@ -331,6 +327,10 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
         {
             newCostCheaper = true;
         }
+        if (newCostCheaper || poison)
+        {
+            changed = true;
+        }
         if(newCostCheaper || curretnNextHop)
         {
             tableRoute->cost = new_cost;
@@ -341,11 +341,9 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
                 tableRoute->next_hop = 0;
             }
             tableRoute->last_update = time(NULL);
-            changed = true;
         }
-
     }
-    printf("END dv_update\n");
+    //printf("END dv_update\n");
     return changed;
 }
 
@@ -357,20 +355,20 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
  * ------------------------------------------------------------------------- */
 static void forward_data(router_t* R, const data_msg_t* in){
     // TODO: Implement packet forwarding using LPM
-    printf("START forward_data\n");
+    //printf("START forward_data\n");
     // Decrement TTL
-    printf("MARKER 0\n");
+    //printf("MARKER 0\n");
     data_msg_t outMsg = *in;
     outMsg.ttl--;
     char out_dst_ip[32];
-    printf("MARKER 1\n");
+    //printf("MARKER 1\n");
     ipstr(outMsg.src_ip, out_dst_ip, sizeof(out_dst_ip));
-    printf("MARKER 2\n");
+    //printf("MARKER 2\n");
     // Perform LPM lookup to find next hop
     route_entry_t* route = rt_lookup(R, outMsg.dst_ip);
-    printf("MARKER 3\n");
+    //printf("MARKER 3\n");
     // Deliver locally if directly connected
-    printf("Self_ip: %d\n, dst_ip: %d\n", R->self_ip, outMsg.dst_ip);
+    //printf("Self_ip: %d\n, dst_ip: %d\n", R->self_ip, outMsg.dst_ip);
     if(route && route->next_hop == 0)
     {
         printf("[R%u] DELIVER src=%s ttl=%u payload=\"%.*s\"\n",R->self_id,out_dst_ip, outMsg.ttl, ntohs(outMsg.payload_len), outMsg.payload);
@@ -398,7 +396,7 @@ static void forward_data(router_t* R, const data_msg_t* in){
     // Get next hop info
     uint32_t nextHopIP = route->next_hop;
     ipstr(nextHopIP, out_dst_ip, sizeof(out_dst_ip));
-    printf("next hop IP: %s", out_dst_ip);
+    //printf("next hop IP: %s", out_dst_ip);
     uint16_t nextHopCost = route->cost;
     neighbor_t* nextHopNb = NULL;
     for (int i = 0; i< R->num_neighbors; i++)
@@ -429,7 +427,7 @@ static void forward_data(router_t* R, const data_msg_t* in){
     {
         perror("ERROR: sendto() data packet failed");
     }
-    printf("END forward_data\n");
+    //printf("END forward_data\n");
 }
 
 /* -------------------------------------------------------------------------
@@ -482,12 +480,13 @@ int main(int argc, char** argv){
             // TODO: Neighbor timeout detection (use neighbor_t's last_heard)
             // If timeout is detected, poison all routes learned from this neighbor
             // Output a log message with log_table(&R, "neighbor-dead");
-            bool poisonNeighbor = false;
+            bool deadNeighbor = false;
             neighbor_t* nb = &R.neighbors[i];
             // Check for timeout
-            if(nb->alive && (time(NULL)-(nb->last_heard)) >= DEAD_INTERVAL_SEC)
+            if(nb->alive && (now-(nb->last_heard)) >= DEAD_INTERVAL_SEC)
             {
                 nb->alive = false;
+                deadNeighbor = true;
                 // Poison all routes from neighbor
                 for(int j = 0; j < R.num_routes; j++)
                 {
@@ -496,11 +495,10 @@ int main(int argc, char** argv){
                     {
                         route->cost = INF_COST;
                         route->last_update = time(NULL);
-                        poisonNeighbor = true;
                     }
                 }
             }
-            if(poisonNeighbor)
+            if (deadNeighbor)
             {
                 log_table(&R,"neighor-dead");
                 broadcast_dv(&R);

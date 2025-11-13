@@ -1,6 +1,5 @@
 TO-DO:
-    Review neighbor timeout detection (use neighbor_t's last_heard)
-    Review control (DV) messages and call dv_update
+    fixed segfaults, code works.
 
 Done:
     Split Horizon and Poison Reverse in send_dv()

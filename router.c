@@ -235,7 +235,6 @@ static void send_dv(router_t* R, const neighbor_t* nb){
     {
         route_entry_t* route = &R->routes[i];
         uint16_t cost = route->cost;
-        bool skip = false;
         // Split horizon: Do not advertise a route back to the neighbor from which it was learned.
         if (route->next_hop == nb->ip)
         {
@@ -337,8 +336,6 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
             if(new_cost < INF_COST)
             {
                 tableRoute->next_hop = nb->ip;
-            } else {
-                tableRoute->next_hop = 0;
             }
             tableRoute->last_update = time(NULL);
         }
@@ -500,7 +497,7 @@ int main(int argc, char** argv){
             }
             if (deadNeighbor)
             {
-                log_table(&R,"neighor-dead");
+                log_table(&R,"neighbor-dead");
                 broadcast_dv(&R);
             }
         }

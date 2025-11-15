@@ -36,7 +36,7 @@ Log demonstrating LPM forwarding:
 
 Log demonstrating Neighbor timeout behavior: 
 
-[R1] ROUTES (neighor-dead):
+[R1] ROUTES (neighbor-dead):
   network         mask            next_hop        cost
   192.168.10.0    255.255.255.0   0.0.0.0         0
   10.0.20.0       255.255.255.0   127.0.1.2       65535

@@ -293,6 +293,7 @@ static bool dv_update(router_t* R, neighbor_t* nb, const dv_msg_t* m){
     nb->last_heard = time(NULL);
     uint16_t numEntries = ntohs(m->num);
     uint16_t link_cost_to_neighbor = nb->cost;
+    // iterate through table and perform necessary updates
     for(int i = 0; i < numEntries; i++)
     {
         bool newCostCheaper = false;

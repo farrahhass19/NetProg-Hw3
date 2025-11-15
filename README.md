@@ -49,22 +49,48 @@ Log demonstrating Neighbor timeout behavior:
 
 What did you observe after removing the Split Horizon/Poison Reverse logic?
 
-Because of the infinite bouncing, the router still believes that there's a path to the dead router. Thus, the router displays:
+After starting up all of the routers, we killed r3 and noticed r1 would not reach dv convergence. Because of the infinite bouncing, the router still believes that there's a path to the dead router. Thus, the router displays:
 
-[R3] ROUTES (neighbor-dead):
-  network         mask            next_hop        cost
-  10.0.30.0       255.255.255.0   0.0.0.0         0
-  192.168.10.0    255.255.255.0   127.0.1.2       2
+[R1] ROUTES (init):
+  network         mask            next_hop        cost 
+  192.168.10.0    255.255.255.0   0.0.0.0         0    
+[R1] ROUTES (dv_update):
+  network         mask            next_hop        cost 
+  192.168.10.0    255.255.255.0   0.0.0.0         0    
+  10.0.20.0       255.255.255.0   127.0.1.2       1    
+[R1] ROUTES (neighbor-dead):
+  network         mask            next_hop        cost 
+  192.168.10.0    255.255.255.0   0.0.0.0         0    
+  10.0.20.0       255.255.255.0   127.0.1.2       1    
+[R1] ROUTES (dv_update):
+  network         mask            next_hop        cost 
+  192.168.10.0    255.255.255.0   0.0.0.0         0    
+  10.0.20.0       255.255.255.0   127.0.1.2       1    
+  10.0.30.0       255.255.255.0   127.0.1.3       3    
+[R1] ROUTES (dv_update):
+  network         mask            next_hop        cost 
+  192.168.10.0    255.255.255.0   0.0.0.0         0    
   10.0.20.0       255.255.255.0   127.0.1.2       1
-[R3] ROUTES (dv_update):
+  10.0.30.0       255.255.255.0   127.0.1.2       2
+[R1] ROUTES (neighbor-dead):
   network         mask            next_hop        cost
-  10.0.30.0       255.255.255.0   0.0.0.0         0
-  192.168.10.0    255.255.255.0   127.0.1.2       65535
+  192.168.10.0    255.255.255.0   0.0.0.0         0
   10.0.20.0       255.255.255.0   127.0.1.2       1
-[R3] ROUTES (dv_update):
+  10.0.30.0       255.255.255.0   127.0.1.2       2
+[R1] ROUTES (dv_update):
   network         mask            next_hop        cost
-  10.0.30.0       255.255.255.0   0.0.0.0         0
-  192.168.10.0    255.255.255.0   127.0.1.2       4
+  192.168.10.0    255.255.255.0   0.0.0.0         0
   10.0.20.0       255.255.255.0   127.0.1.2       1
+  10.0.30.0       255.255.255.0   127.0.1.2       65535
+[R1] ROUTES (dv_update):
+  network         mask            next_hop        cost
+  192.168.10.0    255.255.255.0   0.0.0.0         0
+  10.0.20.0       255.255.255.0   127.0.1.2       1
+  10.0.30.0       255.255.255.0   127.0.1.2       65535
+[R1] ROUTES (dv_update):
+  network         mask            next_hop        cost
+  192.168.10.0    255.255.255.0   0.0.0.0         0
+  10.0.20.0       255.255.255.0   127.0.1.2       1
+  10.0.30.0       255.255.255.0   127.0.1.2       65535
 
   This is incorrect.
